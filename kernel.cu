@@ -2,31 +2,69 @@
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 #include "NumCpp.hpp"
+
 #include <stdio.h>
 
 cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size);
 
 __global__ void addKernel(int *c, const int *a, const int *b)
-{sss
+{
     int i = threadIdx.x;
     c[i] = a[i] + b[i];
 }
 
 nc::NdArray<double> generateDataTestingForCLass(int datapoints, int constraintX, int constraintY, bool garunteedGoodClustering, int numclusters = 3) {
-    for (int jk = 0; jk < datapoints; jk++) {
+    nc::NdArray<double> generatedDataset = nc::empty<double>(nc::Shape(1,2));
+    for (int i = 0; i < datapoints; i++) {
         if (garunteedGoodClustering) {
-
+     //       nc::NdArray<double> randomPointX = nc::random::uniform<double>(nc::Shape(1), 0, constraintX);
+     //       nc::NdArray<double> randomPointY = nc::random::uniform<double>(nc::Shape(1), 0, constraintY);
+     //       nc::NdArray<double> randomPoint = nc::append<double>(randomPointX, randomPointY, nc::Axis::NONE);
+     //       nc::take()
+     //       if
+     //       generatedDataset = nc::append<double>(generatedDataset, randomPoint, nc::Axis::ROW);
+     //       nc::norm();
         }
         else {
-            nc::NdArray<double> randomPointX = nc::random::uniform<double>(nc::Shape(1, 1), 0, constraintX);
-            nc::NdArray<double> randomPointY = nc::random::uniform<double>(nc::Shape(1, 1), 0, constraintY);
-            nc::stack<double>({randomPointX, randomPointY}, nc::Axis::ROW);
-            randomPointX.print();
+            nc::NdArray<double> randomPointX = nc::random::uniform<double>(nc::Shape(1), 0, constraintX);
+            nc::NdArray<double> randomPointY = nc::random::uniform<double>(nc::Shape(1), 0, constraintY);
+            nc::NdArray<double> randomPoint = nc::append<double>(randomPointX, randomPointY, nc::Axis::NONE);
+            generatedDataset = nc::append<double>(generatedDataset, randomPoint, nc::Axis::ROW);
         }
     }
-    nc::NdArray<double> mmmm = { {1, 2}, {3, 4}, {5, 6} };
-    return mmmm;
+    generatedDataset = nc::deleteIndices(generatedDataset, 0, nc::Axis::ROW);
+    return generatedDataset;
 }
+
+nc::NdArray<double> euclidianDistanceMatrix(nc::NdArray<double> dataset) {
+    nc::NdArray<double> xPoints = nc::deleteIndices(dataset, 1, nc::Axis::COL);
+    nc::NdArray<double> yPoints = nc::deleteIndices(dataset, 0, nc::Axis::COL);
+
+    std::pair<nc::NdArray<double>, nc::NdArray<double>> meshpairX = nc::meshgrid(xPoints, xPoints);
+    std::pair<nc::NdArray<double>, nc::NdArray<double>> meshpairY = nc::meshgrid(yPoints, yPoints);
+
+    nc::NdArray<double> xDistances = nc::abs(std::get<0>(meshpairX) - std::get<1>(meshpairX));
+    nc::NdArray<double> yDistances = nc::abs(std::get<0>(meshpairY) - std::get<1>(meshpairY));
+
+    nc::NdArray<double> euclidianDistances = nc::sqrt(nc::power(xDistances, 2) + nc::power(yDistances, 2));
+    return euclidianDistances;
+}
+
+nc::NdArray<int> initialClusterAssignment(int datapoints, bool garunteedGoodClustering, int numclusters = 3) {
+    if (garunteedGoodClustering) {
+        datapoints = datapoints + numclusters;
+    }
+    nc::NdArray<int> clusterAssignment = nc::arange<int>(0, datapoints);
+    return clusterAssignment;
+}
+
+void agglomerativeShortestLink(nc::NdArray<double> distances) {
+
+}
+
+
+
+
 
 int main()
 {
@@ -34,7 +72,11 @@ int main()
     const int a[arraySize] = { 1, 2, 3, 4, 5 };
     const int b[arraySize] = { 10, 20, 30, 40, 50 };
 
-    nc::NdArray<double> ffs = generateDataTestingForCLass(5, 5, 5, false);
+    nc::NdArray<double> dataSet = generateDataTestingForCLass(1000, 100, 100, false);
+    nc::NdArray<double> euclidianDistances = euclidianDistanceMatrix(dataSet);
+    nc::NdArray<int> clusterAssignment = initialClusterAssignment(1000, false);
+
+
     int c[arraySize] = { 0 };
 
     // Add vectors in parallel.
