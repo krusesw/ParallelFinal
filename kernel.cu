@@ -1,6 +1,7 @@
 
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
+#include "NumCpp.hpp"
 
 #include <stdio.h>
 
@@ -12,11 +13,29 @@ __global__ void addKernel(int *c, const int *a, const int *b)
     c[i] = a[i] + b[i];
 }
 
+nc::NdArray<double> generateDataTestingForCLass(int datapoints, int constraintX, int constraintY, bool garunteedGoodClustering, int numclusters = 3) {
+    for (int jk = 0; jk < datapoints; jk++) {
+        if (garunteedGoodClustering) {
+
+        }
+        else {
+            nc::NdArray<double> randomPointX = nc::random::uniform<double>(nc::Shape(1, 1), 0, constraintX);
+            nc::NdArray<double> randomPointY = nc::random::uniform<double>(nc::Shape(1, 1), 0, constraintY);
+            nc::stack<double>({randomPointX, randomPointY}, nc::Axis::ROW);
+            randomPointX.print();
+        }
+    }
+    nc::NdArray<double> mmmm = { {1, 2}, {3, 4}, {5, 6} };
+    return mmmm;
+}
+
 int main()
 {
     const int arraySize = 5;
     const int a[arraySize] = { 1, 2, 3, 4, 5 };
     const int b[arraySize] = { 10, 20, 30, 40, 50 };
+
+    nc::NdArray<double> ffs = generateDataTestingForCLass(5, 5, 5, false);
     int c[arraySize] = { 0 };
 
     // Add vectors in parallel.
@@ -39,6 +58,7 @@ int main()
 
     return 0;
 }
+
 
 // Helper function for using CUDA to add vectors in parallel.
 cudaError_t addWithCuda(int *c, const int *a, const int *b, unsigned int size)
