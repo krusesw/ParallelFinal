@@ -16,6 +16,8 @@
 #include <iomanip>
 #include <thrust/extrema.h>
 #include <thrust/execution_policy.h>
+#include <thrust/remove.h>
+#include <thrust/sequence.h>
 
 #include <stdio.h>
 
@@ -61,7 +63,7 @@ nc::NdArray<float> euclidianDistanceMatrix(nc::NdArray<float> dataset) {
     nc::NdArray<float> yDistances = nc::abs(std::get<0>(meshpairY) - std::get<1>(meshpairY));
 
     nc::NdArray<float> euclidianDistances = nc::sqrt(nc::power(xDistances, 2) + nc::power(yDistances, 2));
-    euclidianDistances = nc::replace(euclidianDistances, (float)0.0, (float)-1.0);
+    euclidianDistances = nc::replace(euclidianDistances, (float)0.0, (float)999999.9);
 
     return euclidianDistances;
 }
@@ -77,7 +79,7 @@ nc::NdArray<int> initialClusterAssignment(int datapoints, bool garunteedGoodClus
 
 
 void agglomerativeShortestLink(int datapoints, int numClusters, nc::NdArray<float> distances, nc::NdArray<int> clusterAssignments) {
-    nc::NdArray<float> distanceAssessment = nc::where(distances > (float) 0.0, distances, (float) 999999.9);
+    nc::NdArray<float> distanceAssessment = nc::where(distances > (float)0.0, distances, (float)999999.9);
     nc::NdArray<float> min = nc::min(distanceAssessment);
     float minValue = min(0, 0);
     nc::NdArray<nc::uint32> minIndicies = nc::argmin(distanceAssessment, nc::Axis::NONE);
@@ -169,9 +171,11 @@ struct gtz {
     __host__ __device__ bool operator() (double x) { return x > 0.; }
 };
 
-struct gtzVec {
-    __host__ __device__ bool operator() (float x, float y) { return x > 0.; }
+struct delPoint {
+    __host__ __device__ bool operator() (int x) { return (x == -1); }
 };
+
+
 
 void sequentialRun() {
     nc::NdArray<float> dataSet = generateDataTestingForCLass(10, 100, 100, false);
@@ -192,60 +196,89 @@ void sequentialRun() {
     //WARNING: ACTIVELY BUGGED IN NEWEST VERSION OF CUDA
     //IF YOU HAVE CUDA 11.0 OR 11.1, THIS WILL NOT WORK
     //FOLLOW WORKAROUND HERE: 
-    printf("%s", "cuda starting");
-    thrust::device_vector<float> d_vec = distanceVector;
-    //Sort distance vector, reminder that -1 values will be at front
+    printf("%s", "cuda starting\n\n");
+    thrust::device_vector<float> cudaDistanceVector = distanceVector;
 
-    float *minElement = thrust::min_element(thrust::device, d_vec.begin(), d_vec.begin()+100, );
+    //Find min distance using thrust min element divide and conqour approach on device  
+    thrust::device_ptr<float> CDVPtr = cudaDistanceVector.data();
+    thrust::device_vector<float>::iterator minIterator = thrust::min_element(thrust::device, CDVPtr, CDVPtr + cudaDistanceVector.size());
 
-    for (int i = 0; i < d_vec.size(); i++)
-        std::cout << "D[" << i << "] = " << d_vec[i] << std::endl;
+    //Get value for index of vector
+    unsigned int index = minIterator - cudaDistanceVector.begin();
 
-    //Find minimum non negative value
-    thrust::device_vector<float>::iterator iter1 = d_vec.begin();
-    thrust::device_vector<float>::iterator iter2 = thrust::find_if(d_vec.begin(), d_vec.begin() + 100, gtz());
-    int d = thrust::distance(iter1, iter2);
+    //Transform index into row cloumn data using divide and modulo
+    //No need for cuda since these are 1 step
+    unsigned int row = index / 10;
+    unsigned int col = index % 10;
 
-    printf("%i", d);
-
-    int row = d / 10;
-    int col = d % 10;
-    int removal = 0;
-    int rewrite = 0;
+    //To avoid indexing issues, always remove the rightmost column and downmost row first
+    //Rename closest index between row and column to 0, named leftIndex
+    //Rename farthest index between row and column to 0, named rightIndex
+    //No need for cuda since these are O(1)
+    unsigned int rightIndex = 0;
+    unsigned int leftIndex = 0;
     if (row >= col) {
-        removal = row;
-        rewrite = col;
+        rightIndex = row;
+        leftIndex = col;
     }
     else {
-        removal = col;
-        rewrite = row;
+        rightIndex = col;
+        leftIndex = row;
     }
 
-    printf("%i", row);
-    printf("%i", col);
+    //Declaring keys to delete from distance vector
+    //Could not find a way to do this more efficiently using thrust
+    thrust::device_vector<int> deleteKeys(100);
+    for (int i = 0; i < 100; i++) {
+        if (i % 10 == leftIndex || i / 10 == leftIndex || i % 10 == rightIndex || i / 10 == rightIndex) {
+            deleteKeys[i] = -1;
+        }
+    }
 
+    thrust::device_vector<float> mergeRowOne(10);
+    thrust::copy(thrust::device, CDVPtr+rightIndex*10, CDVPtr+(rightIndex * 10)+10, mergeRowOne.begin());
+    thrust::device_vector<float> mergeRowTwo(10);
+    thrust::copy(thrust::device, CDVPtr + leftIndex * 10, CDVPtr + (leftIndex * 10) + 10, mergeRowTwo.begin());
 
-     //  thrust::host_vector<int> h_vec(32 << 20);
-     //  std::generate(h_vec.begin(), h_vec.end(), rand);
-    //   thrust::device_vector<int> d_vec = h_vec;
-    //   thrust::sort(d_vec.begin(), d_vec.end());
-    //   thrust::copy(d_vec.begin(), d_vec.end(), h_vec.begin());
+    for (int i = 0; i < mergeRowOne.size(); i++) {
+        std::cout << "D[" << i << "] = " << mergeRowOne[i] << std::endl;
+    }
+    for (int i = 0; i < mergeRowTwo.size(); i++) {
+        std::cout << "D[" << i << "] = " << mergeRowTwo[i] << std::endl;
+    }
 
-       //    float* cudaDistancePointer;
-       //    int* cudaClusterPointer;
+    
 
-       //    int numbytes = 10 * 10 * sizeof(float);
+    thrust::remove_if(CDVPtr, CDVPtr+cudaDistanceVector.size(), deleteKeys.begin(), delPoint());
+    for (int i = 0; i < 10; i++) {
+        for (int i = 0; i < 10; i++) {
+            std::cout << " " << i << "  = " << cudaDistanceVector[i];
+        }
+        std::cout << std::endl;
+    }
+    
 
-       //    cudaMalloc(&cudaDistancePointer, numbytes);
-       //    cudaMalloc(&cudaClusterPointer, numbytes);
-       //    cudaMemcpy(cudaDistancePointer, distancePointer, numbytes, cudaMemcpyHostToDevice);
-       //    cudaMemcpy(cudaClusterPointer, clusterPointer, numbytes, cudaMemcpyHostToDevice);
+    //  thrust::host_vector<int> h_vec(32 << 20);
+    //  std::generate(h_vec.begin(), h_vec.end(), rand);
+   //   thrust::device_vector<int> d_vec = h_vec;
+   //   thrust::sort(d_vec.begin(), d_vec.end());
+   //   thrust::copy(d_vec.begin(), d_vec.end(), h_vec.begin());
 
-       //    agglomerativeShortestLinkCUDA << <1, 10 >> > (10, 3, cudaDistancePointer, cudaClusterPointer);
-           //agglomerativeShortestLinkCUDA << <1, datapoints >> > (datapoints, numClusters, ffd.data(), ffd.data());
+      //    float* cudaDistancePointer;
+      //    int* cudaClusterPointer;
 
-  //  euclidianDistances.print();
-   // agglomerativeShortestLink(10, 3, euclidianDistances, clusterAssignments);
+      //    int numbytes = 10 * 10 * sizeof(float);
+
+      //    cudaMalloc(&cudaDistancePointer, numbytes);
+      //    cudaMalloc(&cudaClusterPointer, numbytes);
+      //    cudaMemcpy(cudaDistancePointer, distancePointer, numbytes, cudaMemcpyHostToDevice);
+      //    cudaMemcpy(cudaClusterPointer, clusterPointer, numbytes, cudaMemcpyHostToDevice);
+
+      //    agglomerativeShortestLinkCUDA << <1, 10 >> > (10, 3, cudaDistancePointer, cudaClusterPointer);
+          //agglomerativeShortestLinkCUDA << <1, datapoints >> > (datapoints, numClusters, ffd.data(), ffd.data());
+
+    euclidianDistances.print();
+    agglomerativeShortestLink(10, 3, euclidianDistances, clusterAssignments);
 
 }
 
