@@ -176,10 +176,11 @@ void agglomerativeShortestLinkCuda(int numPoints, int originalNumPoints, int num
     //IF YOU HAVE CUDA 11.0 OR 11.1, THIS WILL NOT WORK
     //FOLLOW WORKAROUND HERE: 
     thrust::device_vector<float> cudaDistanceVector(distancePointer, distancePointer + numPoints * numPoints);
-    thrust::device_vector<float> cudaClusterVector(clusterPointer, clusterPointer + originalNumPoints * originalNumPoints);
+    thrust::device_vector<int> cudaClusterVector(clusterPointer, clusterPointer + originalNumPoints * numPoints);
 
     //Find min distance using thrust min element divide and conqour approach on device  
     thrust::device_ptr<float> CDVPtr = cudaDistanceVector.data();
+    thrust::device_ptr<int> CCVPtr = cudaClusterVector.data();
     thrust::device_vector<float>::iterator minIterator = thrust::min_element(thrust::device, CDVPtr, CDVPtr + cudaDistanceVector.size());
 
     //Get value for index of vector
@@ -212,6 +213,13 @@ void agglomerativeShortestLinkCuda(int numPoints, int originalNumPoints, int num
     for (int i = 0; i < (numPoints * numPoints); i++) {
         if (i % numPoints == leftIndex || i / numPoints == leftIndex || i % numPoints == rightIndex || i / numPoints == rightIndex) {
             deleteKeys[i] = 1;
+        }
+    }
+
+    thrust::device_vector<int> deleteKeysLabels(originalNumPoints * (numPoints));
+    for (int i = 0; i < (originalNumPoints * (numPoints)); i++) {
+        if (i / originalNumPoints == leftIndex || i / originalNumPoints == rightIndex) {
+            deleteKeysLabels[i] = 1;
         }
     }
 
@@ -257,19 +265,33 @@ void agglomerativeShortestLinkCuda(int numPoints, int originalNumPoints, int num
     //Get clusters to merge together, cant use min column comparison trick here because need all values
     thrust::device_vector<int> mergeCRowOne(cudaClusterVector.begin() + (rightIndex * originalNumPoints), cudaClusterVector.begin() + (rightIndex * originalNumPoints) + originalNumPoints);
     thrust::device_vector<int> mergeCRowTwo(cudaClusterVector.begin() + (leftIndex * originalNumPoints), cudaClusterVector.begin() + (leftIndex * originalNumPoints) + originalNumPoints);
-    std::vector<int> newClusterLabels;
+    thrust::device_vector<int> newClusterLabels(originalNumPoints);
+    int externalCountClustering = 0;
 
     for (int i = 0; i < originalNumPoints; i++) {
-        if (cudaClusterVector[i] != -1) {
-            newClusterLabels.push_back(cudaClusterVector[i]);
+        if (mergeCRowOne[i] != -1) {
+            newClusterLabels[externalCountClustering] = ((int) mergeCRowOne[i]);
+            externalCountClustering++;
         }
-        if (cudaClusterVector[i] != -1) {
-
+        if (mergeCRowTwo[i] != -1) {
+            newClusterLabels[externalCountClustering] = ((int) mergeCRowTwo[i]);
+            externalCountClustering++;
         }
     }
+    for (int i = externalCountClustering; i < originalNumPoints; i++) {
+        newClusterLabels[i] = ((int)-1);
+    }
 
+    //Make new cluster vector
+    thrust::device_vector<int> cudaClusterVectorNew(originalNumPoints * numPoints-1);
+    thrust::device_vector<int>::iterator delIteratorLabel = thrust::remove_if(cudaClusterVector.begin(), cudaClusterVector.begin() + cudaClusterVector.size(), deleteKeysLabels.begin(), delPoint());
+    newClusterLabels.insert(newClusterLabels.begin() + originalNumPoints, cudaClusterVector.begin(), cudaClusterVector.begin() + cudaClusterVector.size());
 
+    thrust::copy(deleteKeysLabels.begin(), deleteKeysLabels.end(), std::ostream_iterator<float>(std::cout, " "));
 
+    std::cout<<"\n\n\n\n";
+
+    thrust::copy(newClusterLabels.begin(), newClusterLabels.end(), std::ostream_iterator<float>(std::cout, " "));
 
     //Remove the minvalue from minarray of new cluster, top left most value will always be 999999.9 once inserted.
     distanceMinVector.erase(distanceMinVector.begin() + rightIndex);
@@ -281,36 +303,31 @@ void agglomerativeShortestLinkCuda(int numPoints, int originalNumPoints, int num
     //Insert new min row for new cluster into distance matrix
     distanceMinVector.insert(distanceMinVector.begin() + numPoints - 2, cudaDistanceVector.begin(), cudaDistanceVector.begin() + cudaDistanceVector.size());
 
-    //Creating new vector with for clustered column
+    //Creating new vector with for distance
     //Fill new vector with data (currently no way to insert column to left that I know of in cuda without a more time complexive method),
     //Have to use sequential for loop here, time constraints on project
     numPoints = numPoints - 1;
     thrust::device_vector<float> cudaDistanceVectorNew((numPoints) * (numPoints));
-
-    //Not currently accounted for in time testing documentation due to sequentiality issue
-    int externalCount = 0;
-    std::vector<float> newValues;
-    for (int i = 0; i < numPoints; i++) {
-        distanceMinVector.insert(distanceMinVector.begin() + (i * (numPoints - 1)) + externalCount, cudaDistanceVector.begin() + (i * (numPoints + 1)) + externalCount , cudaDistanceVector.begin() + (i * (numPoints + 1)) + externalCount + 1);
-        externalCount++;
-
+    for (int i = 0; i < ((numPoints) * (numPoints)); i++) {
+        int rowTemp = i / numPoints;
+        int colTemp = i % numPoints;
+        if (colTemp == 0) {
+            if (rowTemp == 0) {
+                cudaDistanceVectorNew[i]=((float) 999999.9);
+            }
+            else {
+                cudaDistanceVectorNew[i]=(distanceMinVector[rowTemp-1]);
+            }
+        }
+        else {
+            cudaDistanceVectorNew[i] = (distanceMinVector[(rowTemp)*(numPoints-1)+(colTemp-1)]);
+        }
     }
 
-    for (int i = 0; i < cudaDistanceVector.size(); i++)
-        std::cout << "D[" << i << "] = " << cudaDistanceVector[i] << std::endl;
-
-    for (int i = 0; i < distanceMinVector.size(); i++)
-        std::cout << "D[" << i << "] = " << distanceMinVector[i] << std::endl;
-
-
-
-    std::cout << "\n\n";
-
-
-
-
-
-    agglomerativeShortestLinkCuda(numPoints, originalNumPoints, numCluster, distancePointer, clusterPointer)
+    //Send to next iteration
+    float* distanceNewPtr = thrust::raw_pointer_cast(cudaDistanceVectorNew.data());
+    int* clusterNewPtr = thrust::raw_pointer_cast(cudaClusterVectorNew.data());
+   // agglomerativeShortestLinkCuda(numPoints, originalNumPoints, numCluster, distanceNewPtr, clusterNewPtr);
 
 }
 
