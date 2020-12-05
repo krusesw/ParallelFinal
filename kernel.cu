@@ -9,6 +9,7 @@
 #include <thrust/generate.h>
 #include <thrust/sort.h>
 #include <thrust/copy.h>
+#include <thrust/iterator/transform_iterator.h>
 #include <math.h> 
 #include <algorithm>
 #include <cstdlib>
@@ -17,6 +18,7 @@
 #include <thrust/extrema.h>
 #include <thrust/execution_policy.h>
 #include <thrust/remove.h>
+#include <thrust/iterator/discard_iterator.h>
 #include <thrust/sequence.h>
 
 #include <stdio.h>
@@ -78,7 +80,8 @@ nc::NdArray<int> initialClusterAssignment(int datapoints, bool garunteedGoodClus
 }
 
 
-void agglomerativeShortestLink(int datapoints, int numClusters, nc::NdArray<float> distances, nc::NdArray<int> clusterAssignments) {
+void agglomerativeShortestLinkSequential(int datapoints, int numClusters, nc::NdArray<float> distances, nc::NdArray<int> clusterAssignments) {
+    //Find minimum distance and record index and value
     nc::NdArray<float> distanceAssessment = nc::where(distances > (float)0.0, distances, (float)999999.9);
     nc::NdArray<float> min = nc::min(distanceAssessment);
     float minValue = min(0, 0);
@@ -99,6 +102,7 @@ void agglomerativeShortestLink(int datapoints, int numClusters, nc::NdArray<floa
         rewrite = row;
     }
 
+    //Merges removed columns
     nc::NdArray<float> firstMergePointDistances = distances(distances.rSlice(), removal);
     nc::NdArray<float> secondMergePointDistances = distances(distances.rSlice(), rewrite);
     nc::NdArray<float> mergeSet = nc::stack({ firstMergePointDistances, secondMergePointDistances }, nc::Axis::COL);
@@ -109,6 +113,7 @@ void agglomerativeShortestLink(int datapoints, int numClusters, nc::NdArray<floa
     mergeSetRow = nc::append<float>(negitiveOne, mergeSetRow, nc::Axis::NONE);
     nc::NdArray<float> mergeSetCol = nc::deleteIndices(mergeSetRow, 0, nc::Axis::COL);
 
+    //Clusters points together based on min distance calculated
     int clustersOG = clusterAssignments.shape().cols;
     nc::NdArray<int> clusterZeros = nc::zeros<int>(1, clustersOG);
     clusterZeros = nc::where(clusterZeros == 0, -1, -1);
@@ -131,6 +136,8 @@ void agglomerativeShortestLink(int datapoints, int numClusters, nc::NdArray<floa
         }
     }
 
+    //Remove all values we no longer need because they were in a row or col with min distance
+    //Replace 2 rows and 2 cols removed with 1 row and col for new cluster
     clusterAssignments = nc::deleteIndices(clusterAssignments, removal, nc::Axis::ROW);
     clusterAssignments = nc::deleteIndices(clusterAssignments, rewrite, nc::Axis::ROW);
     clusterAssignments = nc::append<int>(clusterZeros, clusterAssignments, nc::Axis::ROW);
@@ -143,61 +150,34 @@ void agglomerativeShortestLink(int datapoints, int numClusters, nc::NdArray<floa
     distances = nc::stack({ mergeSetCol.reshape(datapoints - 2,1), distances }, nc::Axis::COL);
     distances = nc::stack({ mergeSetRow, distances }, nc::Axis::ROW);
 
-    printf("%s", "\n");
-    printf("%s", "\n");
-    printf("%s", "\n");
-    printf("%s", "\n");
-    printf("%s", "\n");
-    printf("%s", "\n");
-    printf("%s", "\n");
-    printf("%s", "\n");
-    mergeSetRow.print();
-    mergeSetCol.print();
-    printf("%s", "\n");
-    distances.print();
-    printf("%s", "\n");
-    clusterAssignments.print();
     if (datapoints - 1 > numClusters) {
         datapoints = datapoints - 1;
-        agglomerativeShortestLink(datapoints, numClusters, distances, clusterAssignments);
+        agglomerativeShortestLinkSequential(datapoints, numClusters, distances, clusterAssignments);
+    }
+    else {
+        clusterAssignments.print();
     }
 }
 
-__global__ void agglomerativeShortestLinkCUDA(int datapoints, int numClusters, float* distances, int* clusterAssignments) {
-
-}
-
 struct gtz {
-    __host__ __device__ bool operator() (double x) { return x > 0.; }
+    __device__ bool operator() (double x) { return x > 0.; }
 };
 
 struct delPoint {
-    __host__ __device__ bool operator() (int x) { return (x == -1); }
+    __device__ bool operator() (int x) { return (x == 1); }
 };
 
+typedef thrust::tuple<int, float> argMinType;
 
 
-void sequentialRun() {
-    nc::NdArray<float> dataSet = generateDataTestingForCLass(10, 100, 100, false);
-    nc::NdArray<float> euclidianDistances = euclidianDistanceMatrix(dataSet);
-    nc::NdArray<int> clusterAssignments = initialClusterAssignment(10, false);
 
-    std::vector<float> distanceVector = euclidianDistances.toStlVector();
-    std::vector<int> clusterVector = clusterAssignments.toStlVector();
-
-    float* distancePointer = distanceVector.data();
-    int* clusterPointer = clusterVector.data();
-
-    //Calling this appearently makes cuda start faster for loading thrust
-    cudaFree(0);
-
+void agglomerativeShortestLinkCuda(int numPoints, int originalNumPoints, int numCluster, float* distancePointer, int* clusterPointer) {
     //Convert Distance Vector to Thrust Vector for parallel compuation
     //https://github.com/NVIDIA/thrust/
     //WARNING: ACTIVELY BUGGED IN NEWEST VERSION OF CUDA
     //IF YOU HAVE CUDA 11.0 OR 11.1, THIS WILL NOT WORK
     //FOLLOW WORKAROUND HERE: 
-    printf("%s", "cuda starting\n\n");
-    thrust::device_vector<float> cudaDistanceVector = distanceVector;
+    thrust::device_vector<float> cudaDistanceVector(distancePointer, distancePointer + numPoints*numPoints);
 
     //Find min distance using thrust min element divide and conqour approach on device  
     thrust::device_ptr<float> CDVPtr = cudaDistanceVector.data();
@@ -208,8 +188,8 @@ void sequentialRun() {
 
     //Transform index into row cloumn data using divide and modulo
     //No need for cuda since these are 1 step
-    unsigned int row = index / 10;
-    unsigned int col = index % 10;
+    unsigned int row = index / numPoints;
+    unsigned int col = index % numPoints;
 
     //To avoid indexing issues, always remove the rightmost column and downmost row first
     //Rename closest index between row and column to 0, named leftIndex
@@ -227,67 +207,143 @@ void sequentialRun() {
     }
 
     //Declaring keys to delete from distance vector
-    //Could not find a way to do this more efficiently using thrust
-    thrust::device_vector<int> deleteKeys(100);
-    for (int i = 0; i < 100; i++) {
-        if (i % 10 == leftIndex || i / 10 == leftIndex || i % 10 == rightIndex || i / 10 == rightIndex) {
-            deleteKeys[i] = -1;
+    //Could not find a way to do this more efficiently using thrust in time
+    //Issue could potentially be solved by setting two thrust sequences and combining them, but order matters
+    thrust::device_vector<int> deleteKeys(numPoints* numPoints);
+    for (int i = 0; i < (numPoints* numPoints); i++) {
+        if (i % numPoints == leftIndex || i / numPoints == leftIndex || i % numPoints == rightIndex || i / numPoints == rightIndex) {
+            deleteKeys[i] = 1;
         }
     }
 
-    thrust::device_vector<float> mergeRowOne(10);
-    thrust::copy(thrust::device, CDVPtr+rightIndex*10, CDVPtr+(rightIndex * 10)+10, mergeRowOne.begin());
-    thrust::device_vector<float> mergeRowTwo(10);
-    thrust::copy(thrust::device, CDVPtr + leftIndex * 10, CDVPtr + (leftIndex * 10) + 10, mergeRowTwo.begin());
+    //Get columns to merge together
+    thrust::device_vector<float> mergeRowOne(numPoints);
+    thrust::copy(thrust::device, CDVPtr + rightIndex * numPoints, CDVPtr + (rightIndex * numPoints) + numPoints, mergeRowOne.begin());
+    thrust::device_vector<float> mergeRowTwo(numPoints);
+    thrust::copy(thrust::device, CDVPtr + leftIndex * numPoints, CDVPtr + (leftIndex * numPoints) + numPoints, mergeRowTwo.begin());
 
-    for (int i = 0; i < mergeRowOne.size(); i++) {
-        std::cout << "D[" << i << "] = " << mergeRowOne[i] << std::endl;
-    }
-    for (int i = 0; i < mergeRowTwo.size(); i++) {
-        std::cout << "D[" << i << "] = " << mergeRowTwo[i] << std::endl;
-    }
+    //Create new vector containing those two columns
+    mergeRowOne.insert(mergeRowOne.begin() + numPoints, mergeRowTwo.begin(), mergeRowTwo.begin() + numPoints);
+
+    //Get min from each column of mergeRowOne, merge into new vector of minimums
+    //With help from advice on this thread:
+    //https://stackoverflow.com/questions/17698969/determining-the-least-element-and-its-position-in-each-matrix-column-with-cuda-t/29841094#29841094
+    thrust::device_vector<float>    distanceMinVector(numPoints);
+    thrust::device_vector<int>      distanceMinIndicies(numPoints);
+
+    thrust::reduce_by_key(
+        thrust::make_transform_iterator(
+            thrust::make_counting_iterator((int)0),
+            thrust::placeholders::_1 / 2),
+        thrust::make_transform_iterator(
+            thrust::make_counting_iterator((int)0),
+            thrust::placeholders::_1 / 2) + 2 * numPoints,
+        thrust::make_zip_iterator(
+            thrust::make_tuple(
+                thrust::make_permutation_iterator(
+                    mergeRowOne.begin(),
+                    thrust::make_transform_iterator(
+                        thrust::make_counting_iterator((int)0), (thrust::device,thrust::placeholders::_1 % 2) * numPoints + thrust::placeholders::_1 / 2)),
+                thrust::make_transform_iterator(
+                    thrust::make_counting_iterator((int)0), thrust::placeholders::_1 % 2))),
+        thrust::make_discard_iterator(),
+        thrust::make_zip_iterator(
+            thrust::make_tuple(
+                distanceMinVector.begin(),
+                distanceMinIndicies.begin())),
+        thrust::equal_to<int>(),
+        thrust::minimum<thrust::tuple<float, int> >()
+    );
+
+    //Get clusters to merge together
+    thrust::device_vector<int> mergeCRowOne(clusterPointer+(rightIndex*originalNumPoints), clusterPointer+ (rightIndex * originalNumPoints)+originalNumPoints);
+    int *uniquePtrOne = thrust::unique(thrust::device, mergeCRowOne.begin(), mergeCRowOne.begin() + originalNumPoints);
+
+    thrust::device_vector<int> mergeCRowTwo(clusterPointer + (leftIndex * originalNumPoints), clusterPointer + (leftIndex * originalNumPoints) + originalNumPoints);
+    int* uniquePtrTwo = thrust::unique(thrust::device, mergeCRowTwo.begin(), mergeCRowTwo.begin() + originalNumPoints);
+
+    //Remove the minvalue from minarray of new cluster, top left most value will always be 999999.9 once inserted.
+    distanceMinVector.erase(distanceMinVector.begin() + rightIndex);
+    distanceMinVector.erase(distanceMinVector.begin() + leftIndex);
+
+    //Delete old clusters from distance vector
+    thrust::device_vector<float>::iterator delIterator = thrust::remove_if(cudaDistanceVector.begin(), cudaDistanceVector.begin() + cudaDistanceVector.size(), deleteKeys.begin(), delPoint());
+
+    //Insert new min row for new cluster into distance matrix
+    distanceMinVector.insert(distanceMinVector.begin() + numPoints-2, cudaDistanceVector.begin(), cudaDistanceVector.begin() + cudaDistanceVector.size());
+
+    //Creating new vector with clustered row
+    thrust::device_vector<float> cudaDistanceVectorNew((numPoints-1) * (numPoints-1));
+
+    thrust::copy(distanceMinVector.begin(), distanceMinVector.end(), std::ostream_iterator<float>(std::cout, " "));
+
+    std::cout << "\n\n";
 
     
 
-    thrust::remove_if(CDVPtr, CDVPtr+cudaDistanceVector.size(), deleteKeys.begin(), delPoint());
-    for (int i = 0; i < 10; i++) {
-        for (int i = 0; i < 10; i++) {
-            std::cout << " " << i << "  = " << cudaDistanceVector[i];
-        }
-        std::cout << std::endl;
-    }
+    //Fill new vector with data (currently no way to insert column to left that I know of in cuda without a more time complexive method),
+    //Have to use sequential for loop here, time constraints
+
+
     
-
-    //  thrust::host_vector<int> h_vec(32 << 20);
-    //  std::generate(h_vec.begin(), h_vec.end(), rand);
-   //   thrust::device_vector<int> d_vec = h_vec;
-   //   thrust::sort(d_vec.begin(), d_vec.end());
-   //   thrust::copy(d_vec.begin(), d_vec.end(), h_vec.begin());
-
-      //    float* cudaDistancePointer;
-      //    int* cudaClusterPointer;
-
-      //    int numbytes = 10 * 10 * sizeof(float);
-
-      //    cudaMalloc(&cudaDistancePointer, numbytes);
-      //    cudaMalloc(&cudaClusterPointer, numbytes);
-      //    cudaMemcpy(cudaDistancePointer, distancePointer, numbytes, cudaMemcpyHostToDevice);
-      //    cudaMemcpy(cudaClusterPointer, clusterPointer, numbytes, cudaMemcpyHostToDevice);
-
-      //    agglomerativeShortestLinkCUDA << <1, 10 >> > (10, 3, cudaDistancePointer, cudaClusterPointer);
-          //agglomerativeShortestLinkCUDA << <1, datapoints >> > (datapoints, numClusters, ffd.data(), ffd.data());
-
-    euclidianDistances.print();
-    agglomerativeShortestLink(10, 3, euclidianDistances, clusterAssignments);
-
+    thrust::copy(cudaDistanceVectorNew.begin(), cudaDistanceVectorNew.end(), std::ostream_iterator<float>(std::cout, " "));
 }
 
+//Prompts users for dataset generation and then starts clustering on service specified
+void setup(bool cuda) {
+    std::cout << "Enter number of datapoints to generate: ";
+    int numPoints = -1;
+    std::cin >> numPoints;
 
+    std::cout << "Enter cluster number to stop generating at: ";
+    int numCluster = -1;
+    std::cin >> numCluster;
 
+    std::cout << "Enter x max (less than 500000): ";
+    int xMax = -1;
+    std::cin >> xMax;
 
+    std::cout << "Enter y max (less than 500000): ";
+    int yMax = -1;
+    std::cin >> yMax;
 
+    if (numPoints < 0 || yMax > 500000 || yMax < 0 || xMax > 500000 || xMax < 0) {
+        std::cout << "Unacceptable Values, try again \n";
+        return;
+    }
+    //Setup data
+    nc::NdArray<float> dataSet = generateDataTestingForCLass(numPoints, xMax, yMax, false);
+    nc::NdArray<float> euclidianDistances = euclidianDistanceMatrix(dataSet);
+    nc::NdArray<int> clusterAssignments = initialClusterAssignment(10, false);
+    clock_t timer;
+    std::cout << "\nStarting with euclidian distance matrix: \n";
+    euclidianDistances.print();
+    std::cout << "\nStarting with each point in seperate clustering. \n";
 
+    if (!cuda) {
+        std::cout << "\nStarting sequential. \n";
+        timer = clock();
+        agglomerativeShortestLinkSequential(numPoints, numCluster, euclidianDistances, clusterAssignments);
+        float dt = clock() - timer;
+        std::cout << "took " << dt << " ms \n";
+    }
+    else {
+        //Prepare data for cuda
+        std::vector<float> distanceVector = euclidianDistances.toStlVector();
+        std::vector<int> clusterVector = clusterAssignments.toStlVector();
+        float* distancePointer = distanceVector.data();
+        int* clusterPointer = clusterVector.data();
+        //Calling this appearently makes cuda start faster for loading thrust
+        cudaFree(0);
+        std::cout << "\nStarting CUDA. \n";
+        timer = clock();
+        agglomerativeShortestLinkCuda(numPoints, numPoints, numCluster, distancePointer, clusterPointer);
+        float dt = clock() - timer;
+        std::cout << "took " << dt << " ms \n";
+    }
+}
 
+//Main GUI loop
 int main()
 {
     bool exitLoop = false;
@@ -297,10 +353,10 @@ int main()
         std::cin >> option;
         if (std::cin.good()) {
             if (option == 1) {
-                sequentialRun();
+                setup(false);
             }
             else if (option == 2) {
-                // cudaRun();
+                setup(true);
             }
             else {
                 return 0;
@@ -311,7 +367,6 @@ int main()
         }
 
     }
-    cudaDeviceSynchronize();
 
     return 0;
 }
