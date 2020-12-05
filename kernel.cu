@@ -285,13 +285,7 @@ void agglomerativeShortestLinkCuda(int numPoints, int originalNumPoints, int num
     //Make new cluster vector
     thrust::device_vector<int> cudaClusterVectorNew(originalNumPoints * numPoints-1);
     thrust::device_vector<int>::iterator delIteratorLabel = thrust::remove_if(cudaClusterVector.begin(), cudaClusterVector.begin() + cudaClusterVector.size(), deleteKeysLabels.begin(), delPoint());
-    newClusterLabels.insert(newClusterLabels.begin() + originalNumPoints, cudaClusterVector.begin(), cudaClusterVector.begin() + cudaClusterVector.size());
-
-    thrust::copy(deleteKeysLabels.begin(), deleteKeysLabels.end(), std::ostream_iterator<float>(std::cout, " "));
-
-    std::cout<<"\n\n\n\n";
-
-    thrust::copy(newClusterLabels.begin(), newClusterLabels.end(), std::ostream_iterator<float>(std::cout, " "));
+    newClusterLabels.insert(newClusterLabels.begin() + originalNumPoints, cudaClusterVector.begin(), cudaClusterVector.begin() + cudaClusterVector.size() - (2*originalNumPoints));
 
     //Remove the minvalue from minarray of new cluster, top left most value will always be 999999.9 once inserted.
     distanceMinVector.erase(distanceMinVector.begin() + rightIndex);
@@ -326,9 +320,18 @@ void agglomerativeShortestLinkCuda(int numPoints, int originalNumPoints, int num
 
     //Send to next iteration
     float* distanceNewPtr = thrust::raw_pointer_cast(cudaDistanceVectorNew.data());
-    int* clusterNewPtr = thrust::raw_pointer_cast(cudaClusterVectorNew.data());
-   // agglomerativeShortestLinkCuda(numPoints, originalNumPoints, numCluster, distanceNewPtr, clusterNewPtr);
-
+    int* clusterNewPtr = thrust::raw_pointer_cast(newClusterLabels.data());
+    if (numPoints != numCluster) {
+        agglomerativeShortestLinkCuda(numPoints, originalNumPoints, numCluster, distanceNewPtr, clusterNewPtr);
+    }
+    else {
+        for (int i = 0; i < numPoints; i++) {
+            for (int j = 0; j < originalNumPoints; j++) {
+                std::cout << newClusterLabels[(i*originalNumPoints)+j] << " ";
+            }
+            std::cout << "\n";
+        }
+    }
 }
 
 //Prompts users for dataset generation and then starts clustering on service specified
