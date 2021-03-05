@@ -1,5 +1,3 @@
-# Parallel Final 
-
 ## Shortest link agglomerative clustering
 
 ## Installation
